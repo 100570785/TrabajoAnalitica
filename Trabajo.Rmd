@@ -3,14 +3,40 @@ title: "Analítica de Negocio: análisis de datos bancarios"
 output: pdf_document
 date: "2026-05-26"
 ---
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```{r}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 9,
+  fig.height = 5
+)
 ```
 
-```{r include=FALSE}
-# Meter aqui todos los paquetes que queramos usar
+El dataset **bank 2.csv** contiene información de campañas de marketing telefónico de una entidad bancaria. Cada fila representa un cliente contactado durante una campaña. La variable más importante para el análisis es `deposit`, que indica si el cliente finalmente contrató o no un depósito.
+
+1.Anális descriptivo de los datos
+
+El objetivo de esta sección es realizar un **análisis descriptivo completo** del dataset, siguiendo la lógica de la metodología **CRISP-DM**.
+
+Las preguntas principales son:
+
+- ¿Qué proporción de clientes acepta contratar el depósito?
+- ¿Qué perfil sociodemográfico tienen los clientes que aceptan?
+- ¿Qué variables de contacto parecen asociarse con una mayor tasa de contratación?
+- ¿Existen diferencias relevantes según edad, empleo, estado civil, educación, saldo, préstamos o historial de campañas anteriores?
+- ¿Qué variables conviene estudiar con más detalle en un futuro modelo predictivo?
+
+```{r paquetes}
+# install.packages("ggplot2")
+# install.packages("dplyr")
+# install.packages("tidyr")
+# install.packages("scales")
+
 library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(scales)
 ```
 
 ```{r}
@@ -20,30 +46,237 @@ names(datos) # nombres de las variables
 print(head(datos)) # primeras 6 filas 
 print(str(datos))
 ```
+El dataset contiene variables de distinto tipo:
 
-No hay valores nulos
+- Variables sociodemográficas: `age`, `job`, `marital`, `education`.
+- Variables financieras: `default`, `balance`, `housing`, `loan`.
+- Variables de contacto de campaña: `contact`, `day`, `month`, `duration`, `campaign`.
+- Variables de campañas previas: `pdays`, `previous`, `poutcome`.
+- Variable objetivo: `deposit`.
+
 
 ```{r}
 faltantes <- sort(colSums(is.na(datos)), decreasing = TRUE) 
 faltantes
 ```
+No hay valores nulos.
 
-## R Markdown
+En este dataset, muchas variables vienen como texto pero representan categorías. Las convertimos a `factor` para que R las trate correctamente en tablas y gráficos.
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+```{r conversion-categoricas}
+variables_categoricas <- c(
+  "job", "marital", "education", "default", "housing", "loan",
+  "contact", "month", "poutcome", "deposit"
+)
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+datos[variables_categoricas] <- lapply(datos[variables_categoricas], factor)
 
-```{r cars}
-summary(cars)
+str(datos)
+```
+Creamos algunas variables auxiliares útiles para el análisis descriptivo:
+
+- `deposit_num`: vale 1 si el cliente acepta el depósito y 0 si no.
+- `contactado_previamente`: identifica si el cliente había sido contactado antes.
+- `grupo_edad`: agrupa la edad en intervalos para facilitar la interpretación.
+- `balance_grupo`: clasifica el saldo en tramos.
+
+```{r variables-auxiliares}
+datos <- datos %>%
+  mutate(
+    deposit_num = ifelse(deposit == "yes", 1, 0),
+    contactado_previamente = ifelse(pdays == -1, "No contactado antes", "Contactado antes"),
+    contactado_previamente = factor(contactado_previamente),
+    grupo_edad = cut(
+      age,
+      breaks = c(17, 30, 40, 50, 60, Inf),
+      labels = c("18-30", "31-40", "41-50", "51-60", "Más de 60"),
+      right = TRUE
+    ),
+    balance_grupo = cut(
+      balance,
+      breaks = c(-Inf, 0, 500, 1500, 5000, Inf),
+      labels = c("Saldo <= 0", "1-500", "501-1500", "1501-5000", "Más de 5000")
+    )
+  )
+
+head(datos)
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+# ----------------------------------------------------------------------
+# Pregunta 1 - ¿Cómo son las variables cuantitativas del dataset?
+# ----------------------------------------------------------------------
+
+```{r resumen-numerico-largo}
+resumen_numerico_largo <- datos %>%
+  select(all_of(variables_numericas)) %>%
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "valor") %>%
+  group_by(variable) %>%
+  summarise(
+    n = n(),
+    media = round(mean(valor, na.rm = TRUE), 2),
+    mediana = round(median(valor, na.rm = TRUE), 2),
+    desviacion = round(sd(valor, na.rm = TRUE), 2),
+    minimo = min(valor, na.rm = TRUE),
+    maximo = max(valor, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+resumen_numerico_largo
+```
+La edad media de los clientes es de 41,23 años, con una mediana de 39, lo que indica una población principalmente adulta.
+
+La variable balance presenta una diferencia importante entre la media y la mediana, lo que sugiere una distribución asimétrica influida por clientes con saldos muy elevados. También se observan saldos negativos, lo que puede indicar situaciones de deuda o descubierto.
+
+En cuanto a las variables relacionadas con la campaña, campaign muestra que la mayoría de clientes fue contactada pocas veces, aunque existen valores extremos de hasta 63 contactos. La duración de la llamada también presenta una alta dispersión, con una media de 371,99 segundos y una mediana de 255 segundos.
+
+Las variables pdays y previous reflejan la información de campañas anteriores. La mediana de pdays igual a -1 y la mediana de previous igual a 0 indican que gran parte de los clientes no había sido contactada previamente.
+
+En conjunto, estos resultados permiten identificar variables con alta dispersión y posibles valores atípicos, especialmente en balance, duration, campaign, pdays y previous.
+
+
+# ----------------------------------------------------------------------
+# Pregunta 2 - ¿Qué proporción de clientes contrata el depósito?
+# ----------------------------------------------------------------------
+
+```{r tabla-deposit}
+tabla_deposit <- datos %>%
+  count(deposit) %>%
+  mutate(
+    porcentaje = round(100 * n / sum(n), 2)
+  )
+
+tabla_deposit
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r grafico-deposit}
+ggplot(tabla_deposit, aes(x = deposit, y = porcentaje, fill = deposit)) +
+  geom_col(color = "white") +
+  geom_text(aes(label = paste0(porcentaje, "%")), vjust = -0.3, size = 4) +
+  labs(
+    title = "Distribución de la variable objetivo: contratación del depósito",
+    x = "¿Contrató depósito?",
+    y = "Porcentaje de clientes"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+Vemos que las clase están altamente balanceadas con un 52,62% de no contrataciones contra un 47,38% de clientes que sí.
+
+
+```{r descriptivos-edad}
+media_edad <- mean(datos$age, na.rm = TRUE)
+mediana_edad <- median(datos$age, na.rm = TRUE)
+
+media_edad
+mediana_edad
+summary(datos$age)
+```
+
+```{r histograma-edad}
+ggplot(datos, aes(x = age)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 5, fill = "steelblue", color = "white", alpha = 0.8) +
+  geom_density(linewidth = 1) +
+  geom_vline(xintercept = media_edad, linetype = "dashed", linewidth = 1) +
+  geom_vline(xintercept = mediana_edad, linetype = "dotted", linewidth = 1) +
+  labs(
+    title = "Distribución de la edad",
+    subtitle = paste0("Media = ", round(media_edad, 2), " | Mediana = ", round(mediana_edad, 2)),
+    x = "Edad",
+    y = "Densidad"
+  ) +
+  theme_minimal()
+```
+
+```{r tasa-deposit-edad}
+tasa_por_edad <- datos %>%
+  group_by(grupo_edad) %>%
+  summarise(
+    clientes = n(),
+    tasa_deposito = round(mean(deposit_num) * 100, 2),
+    .groups = "drop"
+  )
+
+tasa_por_edad
+```
+
+```{r grafico-tasa-edad}
+ggplot(tasa_por_edad, aes(x = grupo_edad, y = tasa_deposito)) +
+  geom_col(fill = "darkseagreen3", color = "white") +
+  geom_text(aes(label = paste0(tasa_deposito, "%")), vjust = -0.3, size = 4) +
+  labs(
+    title = "Tasa de contratación por grupo de edad",
+    x = "Grupo de edad",
+    y = "Tasa de contratación (%)"
+  ) +
+  theme_minimal()
+```
+
+El análisis de la edad muestra que la mayoría de los clientes se concentra entre los 25 y los 45 años, por lo que los grupos de edad intermedia son los más representados dentro de la muestra. La media de edad es de 41,23 años y la mediana de 39, lo que confirma que la base de datos está formada principalmente por adultos en edad laboral.
+
+Al analizar la tasa de contratación por grupos de edad, se observa que los clientes mayores de 60 años presentan la tasa más elevada, con un 82,16%. Sin embargo, esta conclusión debe interpretarse con cautela, ya que este grupo es reducido dentro del dataset. Por tanto, aunque los mayores de 60 muestran una mayor propensión relativa a contratar el depósito, su impacto total en la campaña dependerá del número absoluto de clientes que formen parte de este segmento.
+
+Los clientes de 18 a 30 años también presentan una tasa de contratación superior a la media, con un 57,05%. Este resultado sugiere una posible oportunidad comercial en clientes jóvenes que quizás quieren comenzar a crear un plan de ahorro o inversión contratando este tipo de producto. 
+
+Por otro lado, los grupos intermedios, especialmente entre los 31 y los 60 años, presentan tasas de contratación más reducidas, en torno al 41%-44%. No obstante, estos grupos parecen ser los más representados en la base de datos, por lo que, aunque su conversión individual sea menor, pueden aportar un volumen importante de contrataciones en términos absolutos.
+
+Desde una perspectiva de Business Analytics, este análisis pone de manifiesto la necesidad de combinar dos dimensiones: la tasa de conversión y el tamaño del segmento. Los clientes mayores de 60 años destacan por su elevada tasa de contratación, pero los grupos intermedios pueden ser más relevantes en volumen debido a su mayor presencia en la muestra.
+
+# ----------------------------------------------------------------------
+# Pregunta  - ¿Qué trabajos aparecen con mayor frecuencia?
+# ----------------------------------------------------------------------
+
+```{r tabla-job}
+tabla_job <- datos %>%
+  count(job, sort = TRUE) %>%
+  mutate(porcentaje = round(100 * n / sum(n), 2))
+
+tabla_job
+```
+
+```{r grafico-job}
+ggplot(tabla_job, aes(x = reorder(job, n), y = n)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Distribución de clientes por ocupación",
+    x = "Ocupación",
+    y = "Número de clientes"
+  ) +
+  theme_minimal()
+```
+
+```{r tasa-job}
+tasa_job <- datos %>%
+  group_by(job) %>%
+  summarise(
+    clientes = n(),
+    tasa_deposito = round(mean(deposit_num) * 100, 2),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(tasa_deposito))
+
+tasa_job
+```
+
+```{r grafico-tasa-job}
+ggplot(tasa_job, aes(x = reorder(job, tasa_deposito), y = tasa_deposito)) +
+  geom_col(fill = "darkseagreen3") +
+  coord_flip() +
+  geom_text(aes(label = paste0(tasa_deposito, "%")), hjust = -0.1, size = 3.5) +
+  labs(
+    title = "Tasa de contratación por ocupación",
+    x = "Ocupación",
+    y = "Tasa de contratación (%)"
+  ) +
+  theme_minimal()
+```
+
+El análisis por ocupación muestra que las mayores tasas de contratación corresponden a `student` (74,72%), `retired` (66,32%) y `unemployed` (56,58%). Este resultado resulta llamativo, especialmente en el caso de estudiantes y desempleados, ya que a priori podrían asociarse con menor estabilidad económica o menor capacidad de ahorro. Sin embargo, el dataset no incluye información directa sobre ingresos, patrimonio o liquidez disponible, por lo que no puede concluirse que estos perfiles tengan menor capacidad financiera real.
+
+Además, estos grupos no son los más numerosos dentro de la muestra: estudiantes representan 360 clientes y desempleados 357. Por tanto, aunque presentan una alta conversión relativa, su impacto total en volumen de contrataciones puede ser limitado y sus tasas deben interpretarse con cierta cautela.
+
+En cambio, `management` resulta especialmente interesante desde una perspectiva de negocio, ya que combina una tasa de contratación relativamente alta, del 50,70%, con el mayor volumen de clientes, 2.566. También `technician` y `admin.` son relevantes por su tamaño, con 1.823 y 1.334 clientes respectivamente, aunque sus tasas sean más moderadas.
+
+En conclusión, los resultados sugieren que estudiantes, jubilados y desempleados son segmentos con alta propensión relativa a contratar, pero no necesariamente los de mayor impacto comercial por volumen. Además, la elevada contratación en estudiantes y desempleados debería analizarse con más detalle cruzando la ocupación con variables como `balance`, edad, estado civil o historial de contacto. Desde un enfoque de Business Analytics, la priorización de segmentos debería combinar tasa de conversión, tamaño del grupo y valor potencial del cliente.
